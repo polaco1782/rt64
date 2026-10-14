@@ -70,6 +70,8 @@ namespace RT64 {
         };
 
         uint64_t TMEM[RDP_TMEM_WORDS] = {};
+        // RDRAM texture-image address that last supplied each TMEM word.
+        uint32_t textureSourceAddresses[RDP_TMEM_WORDS] = {};
         LoadTexture texture = {};
         LoadTile tiles[RDP_TILES] = {};
         uint64_t tileReplacementHashes[RDP_TILES] = {};

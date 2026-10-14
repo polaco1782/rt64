@@ -51,6 +51,13 @@ namespace interop {
 
 namespace RT64 {
     // Helper functions.
+
+    // The 15 wire colors from UltraHLE's src/rdp.c, wireprims(), as RGBA8.
+    static constexpr uint32_t WireframeColors[] = {
+        0x000099FF, 0x009900FF, 0x009999FF, 0x990000FF, 0x990099FF,
+        0x999900FF, 0x808080FF, 0x333333FF, 0x0000FFFF, 0x00FF00FF,
+        0x00FFFFFF, 0xFF0000FF, 0xFF00FFFF, 0xFFFF00FF, 0xFFFFFFFF
+    };
     
     RenderRect convertFixedRect(FixedRect rect, hlslpp::float2 resScale, int32_t fbWidth, float aspectRatioScale, float extOriginPercentage, int32_t horizontalMisalignment, uint16_t leftOrigin, uint16_t rightOrigin) {
         if (!rect.isNull()) {
@@ -168,6 +175,8 @@ namespace RT64 {
     }
     
     void FramebufferRenderer::resetFramebuffers(RenderWorker *worker, bool ubershadersVisible, float ditherNoiseStrength, const RenderMultisampling &multisampling) {
+        wireframeClearedColorTargets.clear();
+        wireframeClearedDepthTargets.clear();
         instanceDrawCallVector.clear();
         hitGroupVector.clear();
         renderIndicesVector.clear();
@@ -1250,6 +1259,15 @@ namespace RT64 {
 
         bool depthState = false;
         worker->commandList->setFramebuffer(targetDrawCall.fbStorage->colorDepthWrite.get());
+        if (wireframe.load()) {
+            // Filled pixels and depths from earlier frames must not survive between edges.
+            if ((colorTarget != nullptr) && wireframeClearedColorTargets.insert(colorTarget).second) {
+                worker->commandList->clearColor();
+            }
+            if ((depthTarget != nullptr) && wireframeClearedDepthTargets.insert(depthTarget).second) {
+                worker->commandList->clearDepth();
+            }
+        }
         for (const auto &pair : targetDrawCall.sceneIndices) {
 #       if RT_ENABLED
             if (pair.second) {
@@ -1513,6 +1531,20 @@ namespace RT64 {
                 renderIndices.rdpTileIndex = call.callDesc.tileIndex;
                 renderIndices.rdpTileCount = call.callDesc.tileCount;
                 renderIndices.highlightColor = call.debuggerDesc.highlightColor;
+                const bool drawWireframe = wireframe.load() && (proj.type != Projection::Type::Rectangle)
+                    && (call.callDesc.otherMode.cycleType() != G_CYC_FILL);
+                if (drawWireframe) {
+                    renderIndices.highlightColor = 0xFFFFFFFF;
+                    const bool usesTexture = call.shaderDesc.flags.usesTexture0 || call.shaderDesc.flags.usesTexture1;
+                    const uint32_t tileOffset = (!call.shaderDesc.flags.usesTexture0
+                        && (call.callDesc.otherMode.cycleType() != G_CYC_1CYCLE)) ? 1 : 0;
+                    if (usesTexture && (tileOffset < call.callDesc.tileCount)) {
+                        const DrawCallTile &tile = drawData.callTiles[call.callDesc.tileIndex + tileOffset];
+                        if (tile.valid) {
+                            renderIndices.highlightColor = WireframeColors[tile.textureAddress % std::size(WireframeColors)];
+                        }
+                    }
+                }
                 renderIndicesVector.push_back(renderIndices);
 
                 uint32_t cycleType = call.callDesc.otherMode.cycleType();
@@ -1607,8 +1639,14 @@ namespace RT64 {
                     {
                         triangles.shaderDesc = call.shaderDesc;
 
-                        RasterShader *gpuShader = p.ubershadersOnly ? nullptr : p.rasterShaderCache->getGPUShader(call.shaderDesc);
-                        if (gpuShader != nullptr) {
+                        RasterShader *gpuShader = (p.ubershadersOnly || drawWireframe) ? nullptr : p.rasterShaderCache->getGPUShader(call.shaderDesc);
+                        if (drawWireframe) {
+                            const bool copyMode = (call.shaderDesc.otherMode.cycleType() == G_CYC_COPY);
+                            triangles.pipeline = rasterShaderUber->getWireframePipeline(
+                                !copyMode && call.shaderDesc.otherMode.zCmp() && (call.shaderDesc.otherMode.zMode() != ZMODE_DEC),
+                                !copyMode && call.shaderDesc.otherMode.zUpd());
+                        }
+                        else if (gpuShader != nullptr) {
                             triangles.pipeline = gpuShader->pipeline.get();
                         }
                         else {

@@ -136,6 +136,7 @@ namespace RT64 {
 
     struct DrawCallTile {
         LoadTile loadTile;
+        uint32_t textureAddress = 0;
         uint64_t tmemHashOrID;
         uint16_t sampleWidth;
         uint16_t sampleHeight;

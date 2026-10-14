@@ -639,6 +639,9 @@ namespace RT64 {
                 return;
             }
 
+            // Capture provenance now, before subsequent draws reload this TMEM slot.
+            callTile.textureAddress = rdp->textureSourceAddresses[callTile.loadTile.tmem];
+
             if (!callTile.tileCopyUsed) {
                 if (callTile.tmemHashOrID != 0) {
                     textureManager.uploadEmpty(this, ext.textureCache, workload.submissionFrame, callTile.sampleWidth, callTile.sampleHeight, callTile.tmemHashOrID);

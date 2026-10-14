@@ -14,6 +14,7 @@
 #include "shaders/RasterPSSpecConstantFlat.hlsl.spirv.h"
 #include "shaders/RasterPSSpecConstantFlatMS.hlsl.spirv.h"
 #include "shaders/RasterVSDynamic.hlsl.spirv.h"
+#include "shaders/WireframePS.hlsl.spirv.h"
 #include "shaders/RasterVSSpecConstant.hlsl.spirv.h"
 #include "shaders/RasterVSSpecConstantFlat.hlsl.spirv.h"
 #include "shaders/PostBlendDitherNoiseAddPS.hlsl.spirv.h"
@@ -324,6 +325,7 @@ namespace RT64 {
         pipelineDesc.inputElementsCount = uint32_t(std::size(RasterInputElements));
         pipelineDesc.pipelineLayout = c.pipelineLayout;
         pipelineDesc.primitiveTopology = RenderPrimitiveTopology::TRIANGLE_LIST;
+        pipelineDesc.wireframe = c.wireframe;
         pipelineDesc.vertexShader = c.vertexShader;
         pipelineDesc.pixelShader = c.pixelShader;
         pipelineDesc.specConstants = c.specConstants.data();
@@ -443,6 +445,9 @@ namespace RT64 {
 
         vertexShader = device->createShader(VSBlob, VSBlobSize, "VSMain", shaderFormat);
         pixelShader = device->createShader(PSBlob, PSBlobSize, "PSMain", shaderFormat);
+        if (shaderFormat == RenderShaderFormat::SPIRV) {
+            wireframePixelShader = device->createShader(WireframePSBlobSPIRV, uint32_t(std::size(WireframePSBlobSPIRV)), "PSMain", shaderFormat);
+        }
 
         FramebufferRendererDescriptorCommonSet descriptorCommonSet(shaderLibrary->samplerLibrary, device->getCapabilities().raytracing);
         FramebufferRendererDescriptorTextureSet descriptorTextureSet;
@@ -462,7 +467,7 @@ namespace RT64 {
         pipelineThreadCreations.clear();
         pipelineThreadCreations.resize(std::min(threadCount, pipelineCount));
 
-        PipelineCreation creation;
+        PipelineCreation creation{};
         creation.device = device;
         creation.pipelineLayout = pipelineLayout.get();
         creation.vertexShader = vertexShader.get();
@@ -472,6 +477,9 @@ namespace RT64 {
         creation.NoN = true;
         creation.usesHDR = shaderLibrary->usesHDR;
         creation.multisampling = multisampling;
+
+        wireframeCreation = creation;
+        wireframeCreation.pixelShader = wireframePixelShader.get();
 
         uint32_t threadIndex = 0;
         for (uint32_t i = 0; i < pipelineCount; i++) {
@@ -592,9 +600,27 @@ namespace RT64 {
 
             pipelineThreads.clear();
             pipelineThreadCreations.clear();
-            vertexShader.reset();
+            // Keep the vertex shader available for wireframe pipelines, created on demand.
             pixelShader.reset();
             pipelinesCreated = true;
+        }
+    }
+
+    void RasterShaderUber::createWireframePipelines() {
+        waitForPipelineCreation();
+        if (wireframePipelines[0] != nullptr) {
+            return;
+        }
+
+        PipelineCreation creation = wireframeCreation;
+        creation.wireframe = true;
+        creation.NoN = false;
+        creation.alphaBlend = false;
+        creation.cvgAdd = false;
+        for (uint32_t i = 0; i < uint32_t(std::size(wireframePipelines)); i++) {
+            creation.zCmp = i & 1;
+            creation.zUpd = i & 2;
+            wireframePipelines[i] = RasterShader::createPipeline(creation);
         }
     }
 
@@ -607,5 +633,9 @@ namespace RT64 {
 
     const RenderPipeline *RasterShaderUber::getPipeline(bool zCmp, bool zUpd, bool cvgAdd) const {
         return pipelines[pipelineStateIndex(zCmp, zUpd, cvgAdd)].get();
+    }
+
+    const RenderPipeline *RasterShaderUber::getWireframePipeline(bool zCmp, bool zUpd) const {
+        return wireframePipelines[uint32_t(zCmp) | (uint32_t(zUpd) << 1)].get();
     }
 };

@@ -51,6 +51,7 @@ namespace RT64 {
         bool zUpd;
         bool cvgAdd;
         bool usesHDR;
+        bool wireframe = false;
         std::vector<RenderSpecConstant> specConstants;
         RenderMultisampling multisampling;
     };
@@ -79,6 +80,8 @@ namespace RT64 {
         static const uint64_t RasterPSLibraryHash;
 
         std::unique_ptr<RenderPipeline> pipelines[8];
+        std::unique_ptr<RenderPipeline> wireframePipelines[4];
+        PipelineCreation wireframeCreation;
         std::unique_ptr<RenderPipeline> postBlendDitherNoiseAddPipeline;
         std::unique_ptr<RenderPipeline> postBlendDitherNoiseSubPipeline;
         std::unique_ptr<RenderPipeline> postBlendDitherNoiseSubNegativePipeline;
@@ -90,12 +93,15 @@ namespace RT64 {
         std::vector<std::unique_ptr<std::thread>> pipelineThreads;
         std::unique_ptr<RenderShader> vertexShader;
         std::unique_ptr<RenderShader> pixelShader;
+        std::unique_ptr<RenderShader> wireframePixelShader;
 
         RasterShaderUber(RenderDevice *device, RenderShaderFormat shaderFormat, const RenderMultisampling &multisampling, const ShaderLibrary *shaderLibrary, uint32_t threadCount);
         ~RasterShaderUber();
         void threadCreatePipelines(uint32_t threadIndex);
         void waitForPipelineCreation();
+        void createWireframePipelines();
         uint32_t pipelineStateIndex(bool zCmp, bool zUpd, bool cvgAdd) const;
         const RenderPipeline *getPipeline(bool zCmp, bool zUpd, bool cvgAdd) const;
+        const RenderPipeline *getWireframePipeline(bool zCmp, bool zUpd) const;
     };
 };

@@ -5,6 +5,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <atomic>
 
 #include "common/rt64_emulator_configuration.h"
 #include "common/rt64_user_configuration.h"
@@ -59,6 +60,9 @@ namespace RT64 {
     };
 
     struct FramebufferRenderer {
+        std::atomic<bool> wireframe = false;
+        std::set<RenderTarget *> wireframeClearedColorTargets;
+        std::set<RenderTarget *> wireframeClearedDepthTargets;
         std::vector<uint32_t> textureCacheVersions;
         std::vector<Texture *> textureCacheTextures;
         std::vector<Texture *> textureCacheTextureReplacements;

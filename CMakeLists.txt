@@ -502,6 +502,7 @@ build_pixel_shader_spec_constants(rt64 "src/shaders/RasterPS.hlsl" "src/shaders/
 build_pixel_shader_spec_constants(rt64 "src/shaders/RasterPS.hlsl" "src/shaders/RasterPSSpecConstantFlat.hlsl" "-D SPEC_CONSTANT_RENDER_PARAMS" "-D VERTEX_FLAT_COLOR")
 build_pixel_shader_spec_constants(rt64 "src/shaders/RasterPS.hlsl" "src/shaders/RasterPSSpecConstantFlatMS.hlsl" "-D SPEC_CONSTANT_RENDER_PARAMS" "-D VERTEX_FLAT_COLOR" "-D MULTISAMPLING")
 build_vertex_shader( rt64 "src/shaders/RasterVS.hlsl" "src/shaders/RasterVSDynamic.hlsl" "-D DYNAMIC_RENDER_PARAMS")
+build_pixel_shader(  rt64 "src/shaders/WireframePS.hlsl")
 build_vertex_shader_spec_constants( rt64 "src/shaders/RasterVS.hlsl" "src/shaders/RasterVSSpecConstant.hlsl" "-D SPEC_CONSTANT_RENDER_PARAMS")
 build_vertex_shader_spec_constants( rt64 "src/shaders/RasterVS.hlsl" "src/shaders/RasterVSSpecConstantFlat.hlsl" "-D SPEC_CONSTANT_RENDER_PARAMS" "-D VERTEX_FLAT_COLOR")
 build_compute_shader(rt64 "src/shaders/FbChangesClearCS.hlsl")
@@ -553,4 +554,3 @@ build_pixel_shader(  rt64 "src/shaders/Im3DPS.hlsl")
 build_pixel_shader(  rt64 "src/shaders/PostProcessPS.hlsl")
 
 target_include_directories(rt64 PRIVATE ${CMAKE_BINARY_DIR}/src)
-
