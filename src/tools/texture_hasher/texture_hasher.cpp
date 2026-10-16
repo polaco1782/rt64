@@ -1,17 +1,29 @@
 //
 // RT64
 //
+// SPDX-License-Identifier: GPL-2.0-only
+// Rice hashing is derived from GLideN64 and RiceVideo; see GLIDEN64-LICENSE.
+// Modified 2026-10-16 for v64recomp: in-process API and capture bounds checks.
 
 #include <filesystem>
 #include <fstream>
 #include <list>
+#include <cstring>
+#include <stdexcept>
+#include "texture_hasher.h"
 
 #include "../../contrib/xxHash/xxh3.h"
+#ifdef RT64_TEXTURE_HASHER_LIBRARY
+#include "../../common/rt64_load_types.h"
+#include "../../common/rt64_replacement_database.h"
+#else
 #include "../../common/rt64_load_types.cpp"
 #include "../../common/rt64_replacement_database.cpp"
+#endif
 #include "../../shared/rt64_f3d_defines.h"
 #include "../../common/rt64_tmem_hasher.h"
 
+namespace {
 static const std::string TileInfoExtension = ".tile.json";
 static const std::string TMEMExtension = ".tmem";
 static const std::string RiceInfoExtension = ".rice.json";
@@ -89,10 +101,14 @@ bool loadBytesFromFile(const std::filesystem::path &path, std::vector<uint8_t> &
     std::ifstream file(path, std::ios::binary);
     if (file.is_open()) {
         file.seekg(0, std::ios::end);
-        bytes.resize(file.tellg());
+        const auto size = file.tellg();
+        if (size <= 0 || size > 8 * 1024 * 1024) {
+            return false;
+        }
+        bytes.resize(static_cast<size_t>(size));
         file.seekg(0, std::ios::beg);
         file.read((char *)(bytes.data()), bytes.size());
-        return !file.bad();
+        return bool(file);
     }
     else {
         return false;
@@ -167,6 +183,19 @@ void addRiceHash(const std::filesystem::path &directory, const std::string &hash
 
     RT64::LoadOperation loadOp = {};
     if (!loadOperationInfoFromFile(directory, hashNameWithSuffix, loadOp)) {
+        return;
+    }
+
+    // Interior mip levels may have an unset load record in older captures.
+    // There is no Rice source to hash; this is not a corrupt texture image.
+    if (!loadOp.texture.width) {
+        return;
+    }
+
+    if (!drawWidth || !drawHeight || drawTile.siz > 3 || loadOp.tile.siz > 3 ||
+        loadOp.texture.siz > 3 || drawTile.masks > 15 || drawTile.maskt > 15 ||
+        loadOp.tile.masks > 15 || loadOp.tile.maskt > 15) {
+        fprintf(stderr, "Invalid texture parameters for %s.\n", hashNameWithSuffix.c_str());
         return;
     }
 
@@ -326,7 +355,7 @@ void addRiceHash(const std::filesystem::path &directory, const std::string &hash
             uint32_t esi = 0;
             int x = bytesPerLine - 4;
             while (x >= 0) {
-                esi = *(uint32_t *)(src + x);
+                memcpy(&esi, src + x, sizeof(esi));
                 esi ^= x;
 
                 crc32Ret = (crc32Ret << 4) + ((crc32Ret >> 28) & 15);
@@ -344,9 +373,15 @@ void addRiceHash(const std::filesystem::path &directory, const std::string &hash
     };
     
     // Rice expects to hash at least this many bytes, even if it leaks into other parts of RAM.
-    uint32_t expectedSize = (height - 1) * bpl + (width << drawTile.siz >> 1);
+    // Zero stride is valid (notably single-row block loads). The byte-range
+    // check below still covers every row visited by the checksum routine.
+    if (width <= 0 || height <= 0 || bpl < 0) {
+        fprintf(stderr, "Invalid Rice dimensions for %s.\n", hashNameWithSuffix.c_str());
+        return;
+    }
+    uint64_t expectedSize = uint64_t(height - 1) * bpl + (uint64_t(width) << drawTile.siz >> 1);
     if (expectedSize > rdramBytes.size()) {
-        fprintf(stderr, "Unable to hash %s. Expected %d bytes but got %zu bytes (%dX%d).\n", hashNameWithSuffix.c_str(), expectedSize, rdramBytes.size(), width, height);
+        fprintf(stderr, "Unable to hash %s. Expected %llu bytes but got %zu bytes (%dX%d).\n", hashNameWithSuffix.c_str(), static_cast<unsigned long long>(expectedSize), rdramBytes.size(), width, height);
         return;
     }
 
@@ -376,6 +411,9 @@ void addRiceHash(const std::filesystem::path &directory, const std::string &hash
         if (!loadBytesFromFile(directory / (hashNameWithSuffix + TMEMExtension), tmemBytes)) {
             return;
         }
+        if (tmemBytes.size() != 4096) {
+            return;
+        }
 
         const uint64_t hash = RT64::TMEMHasher::hash(tmemBytes.data(), drawTile, drawWidth, drawHeight, toHashTLUT(drawTLUT), RT64::TMEMHasher::CurrentHashVersion);
         currentHashName = RT64::ReplacementDatabase::hashToString(hash);
@@ -400,10 +438,12 @@ void addRiceHash(const std::filesystem::path &directory, const std::string &hash
         uint32_t ricePaletteCrc = 0;
         if (drawTile.siz == G_IM_SIZ_4b) {
             cimax = CalculateMaxCI4b(rdramBytes.data(), width, height, bpl);
+            if (paletteBytes.size() < (uint32_t(cimax) + 1U) * 2U) return;
             ricePaletteCrc = RiceCRC32(paletteBytes.data(), cimax + 1, 1, 2, 32);
         }
         else {
             cimax = CalculateMaxCI8b(rdramBytes.data(), width, height, bpl);
+            if (paletteBytes.size() < (uint32_t(cimax) + 1U) * 2U) return;
             ricePaletteCrc = RiceCRC32(paletteBytes.data(), cimax + 1, 1, 2, 512);
         }
         
@@ -459,6 +499,37 @@ void showHelp() {
     );
 }
 
+}
+
+void RT64::generateRiceHashes(const std::filesystem::path &directory) {
+    ReplacementDatabase database;
+    database.config.autoPath = ReplacementAutoPath::Rice;
+    const auto path = directory / "rt64.json";
+    if (std::filesystem::exists(path)) {
+        std::ifstream input(path);
+        if (!input) throw std::runtime_error("cannot read Rice capture database");
+        json root;
+        input >> root;
+        database = root;
+    }
+    if (database.config.hashVersion != TMEMHasher::CurrentHashVersion)
+        throw std::runtime_error("Rice capture database hash version does not match RT64");
+    std::list<RenameFile> renames;
+    for (const auto &entry : std::filesystem::directory_iterator(directory)) {
+        const auto name = entry.path().filename().u8string();
+        if (entry.is_regular_file() && endsWith(name, RiceInfoExtension))
+            addRiceHash(directory, name.substr(0, name.size() - RiceInfoExtension.size()), database, renames);
+    }
+    const auto temporary = directory / "rt64.json.new";
+    std::ofstream output(temporary);
+    output << json(database).dump(2) << '\n';
+    output.close();
+    if (!output) throw std::runtime_error("cannot write Rice capture database");
+    executeRenameFiles(renames);
+    std::filesystem::rename(temporary, path);
+}
+
+#ifndef RT64_TEXTURE_HASHER_LIBRARY
 int main(int argc, char *argv[]) {
     if (argc < 3) {
         showHelp();
@@ -619,3 +690,4 @@ int main(int argc, char *argv[]) {
     
     return 0;
 }
+#endif

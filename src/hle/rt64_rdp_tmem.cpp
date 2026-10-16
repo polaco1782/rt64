@@ -37,7 +37,7 @@ namespace RT64 {
         }
         
         // Dump memory contents into a file if the process is active.
-        if (!state->dumpingTexturesDirectory.empty()) {
+        if (captureTexture || !state->dumpingTexturesDirectory.empty()) {
             // Since width and height are not exactly guaranteed to be sane values when using raw TMEM, ensure we only dump textures when the values make sense.
             const bool validTextureCheck = (width > 0x0) && (height > 0x0);
             const bool bigTextureCheck = (width > 0x1000) || (height > 0x1000);
@@ -58,7 +58,7 @@ namespace RT64 {
         }
 
         // Dump memory contents into a file if the process is active.
-        if (!state->dumpingTexturesDirectory.empty()) {
+        if (captureTexture || !state->dumpingTexturesDirectory.empty()) {
             dumpTexture(hash, state, loadTile, width, height, tlut);
         }
 
@@ -67,6 +67,13 @@ namespace RT64 {
 
     void TextureManager::dumpTexture(uint64_t hash, State *state, const LoadTile &loadTile, uint16_t width, uint16_t height, uint32_t tlut) {
         if (dumpedSet.find(hash) != dumpedSet.end()) {
+            return;
+        }
+
+        if (captureTexture) {
+            if (captureTexture(hash, state, loadTile, width, height, tlut)) {
+                dumpedSet.insert(hash);
+            }
             return;
         }
 
