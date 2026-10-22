@@ -15,6 +15,7 @@
 #include <json/json.hpp>
 
 #include "common/rt64_replacement_database.h"
+#include "common/rt64_texture_pack.h"
 #include "hle/rt64_draw_call.h"
 
 #include "rt64_descriptor_sets.h"
@@ -57,6 +58,9 @@ namespace RT64 {
     struct ReplacementDirectory {
         std::filesystem::path dirOrZipPath;
         std::string zipBasePath; // Only applies to Zip.
+        std::string riceRomTitle; // Nonempty enables live Rice ZIP matching and a sidecar database.
+        bool logTextureLoads = false;
+        size_t rdramByteCount = 0; // Required for bounded capture from the host's guest memory.
 
         ReplacementDirectory(const std::filesystem::path &dirOrZipPath, const std::string &zipBasePath = "") {
             this->dirOrZipPath = dirOrZipPath;
@@ -201,6 +205,8 @@ namespace RT64 {
         const ShaderLibrary *shaderLibrary;
         std::vector<TextureUpload> uploadQueue;
         std::vector<ReplacementResolvedPath> resolvedPathQueue;
+        std::vector<ReplacementResolvedPath> texturePackMappingQueue;
+        std::vector<std::unique_ptr<TexturePackScanner>> texturePackScanners;
         std::vector<StreamResult> streamResultQueue;
         std::vector<std::unique_ptr<RenderBuffer>> tmemUploadResources;
         std::vector<std::unique_ptr<RenderBuffer>> replacementUploadResources;
@@ -244,6 +250,11 @@ namespace RT64 {
         void reloadReplacements(bool clearQueue, uint64_t exclusiveDbHash = 0);
         bool loadReplacementDirectory(const ReplacementDirectory &replacementDirectory);
         bool loadReplacementDirectories(const std::vector<ReplacementDirectory> &replacementDirectories);
+        bool loadTexturePack(const std::filesystem::path &zipPath, const std::string &romTitle, size_t rdramByteCount, bool logLoads = false);
+        void captureTexturePack(uint64_t hash, uint64_t frame, const uint8_t *rdram, const LoadTile &tile,
+            const LoadOperation &load, const LoadOperation &palette, uint16_t width, uint16_t height, uint32_t tlut);
+        Texture *loadTextureFromFileSystem(uint32_t index, const std::string &path, RenderDevice *device,
+            RenderCommandList *commandList, std::unique_ptr<RenderBuffer> &uploadResource);
         bool saveReplacementDatabase();
         void setReplacementDefaultShift(ReplacementShift shift);
         void setReplacementDefaultOperation(ReplacementOperation shift);

@@ -409,7 +409,6 @@ namespace RT64 {
         // Texture streaming threads should have a priority somewhere inbetween the main threads and the shader compilation threads.
         Thread::setCurrentThreadPriority(Thread::Priority::Low);
 
-        std::vector<uint8_t> replacementBytes;
         while (threadRunning) {
             StreamDescription streamDesc;
 
@@ -431,13 +430,12 @@ namespace RT64 {
             
             if (!streamDesc.relativePath.empty()) {
                 ElapsedTimer elapsedTimer;
-                bool fileLoaded = textureCache->textureMap.replacementMap.fileSystems[streamDesc.fileSystemIndex]->load(streamDesc.relativePath, replacementBytes);
-                textureCache->addStreamLoadTime(elapsedTimer.elapsedMicroseconds());
-
-                if (fileLoaded) {
+                {
                     worker->commandList->begin();
-                    Texture *texture = TextureCache::loadTextureFromBytes(worker->device, worker->commandList.get(), replacementBytes, uploadResource);
+                    Texture *texture = textureCache->loadTextureFromFileSystem(streamDesc.fileSystemIndex,
+                        streamDesc.relativePath, worker->device, worker->commandList.get(), uploadResource);
                     worker->commandList->end();
+                    textureCache->addStreamLoadTime(elapsedTimer.elapsedMicroseconds());
 
                     // Only execute the command list and wait if the texture was loaded successfully.
                     if (texture != nullptr) {
@@ -490,8 +488,11 @@ namespace RT64 {
     }
 
     TextureCache::~TextureCache() {
+        for (auto &scanner : texturePackScanners)
+            if (scanner) scanner->stop();
         waitForAllStreamThreads(true);
         streamThreads.clear();
+        texturePackScanners.clear();
 
         if (uploadThread != nullptr) {
             uploadThreadRunning = false;
@@ -973,6 +974,7 @@ namespace RT64 {
         std::vector<TextureUpload> queueCopy;
         std::vector<TextureUpload> newQueue;
         std::vector<ReplacementResolvedPath> resolvedPathQueueCopy;
+        std::vector<ReplacementResolvedPath> texturePackMappingQueueCopy;
         std::vector<StreamResult> streamResultQueueCopy;
         std::vector<TextureMapAddition> textureMapAdditions;
         std::vector<ReplacementMapAddition> replacementMapAdditions;
@@ -992,12 +994,14 @@ namespace RT64 {
             {
                 std::unique_lock queueLock(uploadQueueMutex);
                 uploadQueueChanged.wait(queueLock, [this]() {
-                    return !uploadThreadRunning || !uploadQueue.empty() || !resolvedPathQueue.empty() || !streamResultQueue.empty();
+                    return !uploadThreadRunning || !uploadQueue.empty() || !resolvedPathQueue.empty() || !streamResultQueue.empty() || !texturePackMappingQueue.empty();
                 });
 
                 if (!uploadQueue.empty()) {
                     queueCopy = uploadQueue;
                 }
+
+                texturePackMappingQueueCopy.swap(texturePackMappingQueue);
 
                 if (!resolvedPathQueue.empty()) {
                     resolvedPathQueueCopy.insert(resolvedPathQueueCopy.end(), resolvedPathQueue.begin(), resolvedPathQueue.end());
@@ -1010,6 +1014,15 @@ namespace RT64 {
                 }
             }
             
+            if (!texturePackMappingQueueCopy.empty()) {
+                std::unique_lock mapLock(textureMapMutex);
+                for (const auto &path : texturePackMappingQueueCopy) {
+                    textureMap.replacementMap.fileSystemResolvedPaths[path.fileSystemIndex][path.textureHash] = path;
+                    resolvedPathQueueCopy.push_back(path);
+                }
+                texturePackMappingQueueCopy.clear();
+            }
+
             if (!streamResultQueueCopy.empty()) {
                 {
                     // Add the textures to the replacement pool as a loaded texture.
@@ -1407,8 +1420,11 @@ namespace RT64 {
     }
 
     void TextureCache::clearReplacementDirectories() {
+        for (auto &scanner : texturePackScanners)
+            if (scanner) scanner->stop();
         // Wait for the streaming threads to be finished.
         waitForAllStreamThreads(true);
+        texturePackScanners.clear();
 
         // Reset the benchmark counters.
         resetStreamPerformanceCounters();
@@ -1421,6 +1437,8 @@ namespace RT64 {
             }
 
             streamResultQueue.clear();
+            texturePackMappingQueue.clear();
+            resolvedPathQueue.clear();
         }
 
         // Clear the current set of textures that were sent to streaming threads.
@@ -1453,6 +1471,41 @@ namespace RT64 {
         }
 
         uploadQueueChanged.notify_all();
+    }
+
+    Texture *TextureCache::loadTextureFromFileSystem(uint32_t index, const std::string &path, RenderDevice *device,
+        RenderCommandList *commandList, std::unique_ptr<RenderBuffer> &uploadResource) {
+        if (index < texturePackScanners.size() && texturePackScanners[index]) {
+            std::vector<uint8_t> pixels;
+            int width, height;
+            if (!texturePackScanners[index]->loadRGBA(path, pixels, width, height))
+                return nullptr;
+            auto texture = std::make_unique<Texture>();
+            texture->mipmaps = 1;
+            setRGBA32(texture.get(), device, commandList, pixels.data(), pixels.size(), width, height, width * 4, uploadResource);
+            return texture.release();
+        }
+        std::vector<uint8_t> bytes;
+        if (!textureMap.replacementMap.fileSystems[index]->load(path, bytes))
+            return nullptr;
+        return loadTextureFromBytes(device, commandList, bytes, uploadResource);
+    }
+
+    void TextureCache::captureTexturePack(uint64_t hash, uint64_t frame, const uint8_t *rdram, const LoadTile &tile,
+        const LoadOperation &load, const LoadOperation &palette, uint16_t width, uint16_t height, uint32_t tlut) {
+        for (auto &scanner : texturePackScanners)
+            if (scanner)
+                scanner->capture(hash, frame, rdram, tile, load, palette, width, height, tlut);
+    }
+
+    bool TextureCache::loadTexturePack(const std::filesystem::path &zipPath, const std::string &romTitle, size_t rdramByteCount, bool logLoads) {
+        if (romTitle.empty() || !rdramByteCount || !std::filesystem::is_regular_file(zipPath))
+            return false;
+        ReplacementDirectory directory(zipPath);
+        directory.riceRomTitle = romTitle;
+        directory.rdramByteCount = rdramByteCount;
+        directory.logTextureLoads = logLoads;
+        return loadReplacementDirectory(directory);
     }
 
     bool TextureCache::loadReplacementDirectory(const ReplacementDirectory &replacementDirectory) {
@@ -1502,6 +1555,30 @@ namespace RT64 {
             }
         }
 
+        texturePackScanners.resize(fileSystems.size());
+        for (uint32_t i = 0; i < fileSystems.size(); i++) {
+            const auto &directory = replacementDirectories[i];
+            if (directory.riceRomTitle.empty())
+                continue;
+            if (!directory.rdramByteCount || !std::filesystem::is_regular_file(directory.dirOrZipPath) || !directory.zipBasePath.empty())
+                return false;
+            texturePackScanners[i] = std::make_unique<TexturePackScanner>(fileSystems[i].get(),
+                directory.dirOrZipPath, directory.riceRomTitle, directory.rdramByteCount,
+                [this, i](const ReplacementTexture &texture) {
+                    ReplacementResolvedPath path;
+                    path.fileSystemIndex = i;
+                    path.textureHash = ReplacementDatabase::stringToHash(texture.hashes.rt64);
+                    path.relativePath = texture.path;
+                    path.originalOperation = path.resolvedOperation = ReplacementOperation::Stream;
+                    path.originalShift = path.resolvedShift = ReplacementShift::Half;
+                    {
+                        std::unique_lock queueLock(uploadQueueMutex);
+                        texturePackMappingQueue.push_back(std::move(path));
+                    }
+                    uploadQueueChanged.notify_all();
+                }, directory.logTextureLoads);
+        }
+
         // Load databases and low mipmap caches from the filesystems in reverse order.
         {
             loaderCommandList->begin();
@@ -1512,7 +1589,23 @@ namespace RT64 {
             std::vector<std::unique_ptr<RenderBuffer>> uploadBuffers;
             std::set<uint32_t> knownHashVersions;
             for (int32_t i = int32_t(fileSystems.size()) - 1; i >= 0; i--) {
-                if (fileSystems[i]->load(ReplacementDatabaseFilename, databaseBytes)) {
+                if (texturePackScanners[i]) {
+                    auto db = texturePackScanners[i]->database();
+                    // Sidecars contain exact canonical ZIP entry names, including
+                    // case-sensitive extensions. Do not auto-substitute another file.
+                    for (const auto &texture : db.textures) {
+                        ReplacementResolvedPath path;
+                        path.fileSystemIndex = uint32_t(i);
+                        path.textureHash = ReplacementDatabase::stringToHash(texture.hashes.rt64);
+                        path.relativePath = texture.path;
+                        path.originalOperation = path.resolvedOperation = ReplacementOperation::Stream;
+                        path.originalShift = path.resolvedShift = ReplacementShift::Half;
+                        fileSystemResolvedPaths[i].emplace(path.textureHash, std::move(path));
+                    }
+                    fileSystemHashVersions[i] = db.config.hashVersion;
+                    knownHashVersions.insert(db.config.hashVersion);
+                }
+                else if (fileSystems[i]->load(ReplacementDatabaseFilename, databaseBytes)) {
                     try {
                         ReplacementDatabase db;
                         db = json::parse(databaseBytes.begin(), databaseBytes.end(), nullptr, true);
@@ -1584,6 +1677,11 @@ namespace RT64 {
         }
 
         reloadReplacements(true);
+        for (auto &scanner : texturePackScanners)
+            if (scanner)
+                scanner->start();
+        if (std::none_of(texturePackScanners.begin(), texturePackScanners.end(), [](const auto &scanner) { return bool(scanner); }))
+            texturePackScanners.clear();
 
         return true;
     }

@@ -315,6 +315,8 @@ set (SOURCES
     "${PROJECT_SOURCE_DIR}/src/common/rt64_math.cpp"
     "${PROJECT_SOURCE_DIR}/src/common/rt64_profiling_timer.cpp"
     "${PROJECT_SOURCE_DIR}/src/common/rt64_replacement_database.cpp"
+    "${PROJECT_SOURCE_DIR}/src/common/rt64_rice_hasher.cpp"
+    "${PROJECT_SOURCE_DIR}/src/common/rt64_texture_pack.cpp"
     "${PROJECT_SOURCE_DIR}/src/common/rt64_thread.cpp"
     "${PROJECT_SOURCE_DIR}/src/common/rt64_timer.cpp"
     "${PROJECT_SOURCE_DIR}/src/common/rt64_user_configuration.cpp"

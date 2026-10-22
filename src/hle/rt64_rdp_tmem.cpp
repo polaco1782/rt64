@@ -36,8 +36,14 @@ namespace RT64 {
             textureCache->queueGPUUploadTMEM(hash, creationFrame, TMEM, RDP_TMEM_BYTES, width, height, 0, LoadTile(), false);
         }
         
+        if (!textureCache->texturePackScanners.empty()) {
+            const auto &load = state->rdp->rice.lastLoadOpByTMEM[loadTile.tmem];
+            const auto &palette = state->rdp->rice.lastLoadOpByTMEM[256 + (loadTile.siz == G_IM_SIZ_4b ? loadTile.palette * 16 : 0)];
+            textureCache->captureTexturePack(hash, creationFrame, state->RDRAM, loadTile, load, palette, width, height, tlut);
+        }
+
         // Dump memory contents into a file if the process is active.
-        if (captureTexture || !state->dumpingTexturesDirectory.empty()) {
+        if (!state->dumpingTexturesDirectory.empty()) {
             // Since width and height are not exactly guaranteed to be sane values when using raw TMEM, ensure we only dump textures when the values make sense.
             const bool validTextureCheck = (width > 0x0) && (height > 0x0);
             const bool bigTextureCheck = (width > 0x1000) || (height > 0x1000);
@@ -57,8 +63,14 @@ namespace RT64 {
             textureCache->queueGPUUploadTMEM(hash, creationFrame, TMEM, RDP_TMEM_BYTES, width, height, tlut, loadTile, true);
         }
 
+        if (!textureCache->texturePackScanners.empty()) {
+            const auto &load = state->rdp->rice.lastLoadOpByTMEM[loadTile.tmem];
+            const auto &palette = state->rdp->rice.lastLoadOpByTMEM[256 + (loadTile.siz == G_IM_SIZ_4b ? loadTile.palette * 16 : 0)];
+            textureCache->captureTexturePack(hash, creationFrame, state->RDRAM, loadTile, load, palette, width, height, tlut);
+        }
+
         // Dump memory contents into a file if the process is active.
-        if (captureTexture || !state->dumpingTexturesDirectory.empty()) {
+        if (!state->dumpingTexturesDirectory.empty()) {
             dumpTexture(hash, state, loadTile, width, height, tlut);
         }
 
@@ -67,13 +79,6 @@ namespace RT64 {
 
     void TextureManager::dumpTexture(uint64_t hash, State *state, const LoadTile &loadTile, uint16_t width, uint16_t height, uint32_t tlut) {
         if (dumpedSet.find(hash) != dumpedSet.end()) {
-            return;
-        }
-
-        if (captureTexture) {
-            if (captureTexture(hash, state, loadTile, width, height, tlut)) {
-                dumpedSet.insert(hash);
-            }
             return;
         }
 
